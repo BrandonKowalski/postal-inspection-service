@@ -1,0 +1,18 @@
+services:
+  postal-inspection-service:
+    build: .
+    container_name: postal-inspection-service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - ICLOUD_EMAIL=${ICLOUD_EMAIL}
+      - ICLOUD_APP_PASSWORD=${ICLOUD_APP_PASSWORD}
+      - POLL_INTERVAL=1m
+      - WEB_PORT=8080
+      - DB_PATH=/data/postal.db
+    volumes:
+      - postal-data:/data
+
+volumes:
+  postal-data:
