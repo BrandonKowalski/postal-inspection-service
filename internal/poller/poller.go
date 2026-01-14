@@ -12,6 +12,17 @@ import (
 	"postal-inspection-service/internal/imap"
 )
 
+// excludedFolders are folders that should not be scanned for blocked/marketing emails
+var excludedFolders = map[string]bool{
+	"Orders":                   true,
+	"USPIS":                    true,
+	"USPIS/Block":              true,
+	"USPIS/Transactional Only": true,
+	"Sent Messages":            true,
+	"Drafts":                   true,
+	"Deleted Messages":         true,
+}
+
 type Poller struct {
 	client   *imap.Client
 	db       *db.DB
@@ -240,34 +251,55 @@ func (p *Poller) deleteBlockedSenderEmails() error {
 		senderAddresses[i] = s.Email
 	}
 
-	emails, err := p.client.FetchEmailsFromSenders(senderAddresses)
+	// Get all folders
+	folders, err := p.client.ListFolders()
 	if err != nil {
-		return fmt.Errorf("failed to fetch emails from blocked senders: %w", err)
+		return fmt.Errorf("failed to list folders: %w", err)
 	}
 
-	if len(emails) == 0 {
-		return nil
+	var totalDeleted int
+
+	for _, folder := range folders {
+		// Skip excluded folders
+		if excludedFolders[folder] {
+			continue
+		}
+
+		emails, err := p.client.FetchEmailsFromSenders(folder, senderAddresses)
+		if err != nil {
+			log.Printf("Error fetching from folder %s: %v", folder, err)
+			continue
+		}
+
+		if len(emails) == 0 {
+			continue
+		}
+
+		log.Printf("Found %d emails from blocked senders in %s", len(emails), folder)
+
+		var uidsToDelete []uint32
+		for _, email := range emails {
+			uidsToDelete = append(uidsToDelete, email.UID)
+			p.db.LogAction(
+				db.ActionDeletedEmail,
+				email.From,
+				email.Subject,
+				email.MessageID,
+				fmt.Sprintf("Auto-deleted email from blocked sender (folder: %s)", folder),
+			)
+		}
+
+		if err := p.client.DeleteEmails(folder, uidsToDelete); err != nil {
+			log.Printf("Error deleting from folder %s: %v", folder, err)
+			continue
+		}
+
+		totalDeleted += len(uidsToDelete)
 	}
 
-	log.Printf("Found %d emails from blocked senders", len(emails))
-
-	var uidsToDelete []uint32
-	for _, email := range emails {
-		uidsToDelete = append(uidsToDelete, email.UID)
-		p.db.LogAction(
-			db.ActionDeletedEmail,
-			email.From,
-			email.Subject,
-			email.MessageID,
-			"Auto-deleted email from blocked sender",
-		)
+	if totalDeleted > 0 {
+		log.Printf("Deleted %d total emails from blocked senders across all folders", totalDeleted)
 	}
-
-	if err := p.client.DeleteEmails(uidsToDelete); err != nil {
-		return fmt.Errorf("failed to delete blocked sender emails: %w", err)
-	}
-
-	log.Printf("Deleted %d emails from blocked senders", len(uidsToDelete))
 	return nil
 }
 
@@ -286,47 +318,70 @@ func (p *Poller) filterMarketingEmails() error {
 		senderAddresses[i] = s.Email
 	}
 
-	emails, err := p.client.FetchEmailsFromSenders(senderAddresses)
+	// Get all folders
+	folders, err := p.client.ListFolders()
 	if err != nil {
-		return fmt.Errorf("failed to fetch emails from transactional-only senders: %w", err)
+		return fmt.Errorf("failed to list folders: %w", err)
 	}
 
-	if len(emails) == 0 {
-		return nil
-	}
+	var totalDeleted, totalKept int
 
-	var uidsToDelete []uint32
-	var keptCount int
-
-	for _, email := range emails {
-		classification := classifier.Classify(email.Subject)
-
-		if classification.IsTransactional {
-			// Keep this email - it's transactional
-			keptCount++
-			log.Printf("Keeping transactional email from %s: %s (%s)",
-				email.From, email.Subject, classification.Reason)
-		} else {
-			// Delete this email - it's marketing
-			uidsToDelete = append(uidsToDelete, email.UID)
-			p.db.LogAction(
-				db.ActionDeletedMarketing,
-				email.From,
-				email.Subject,
-				email.MessageID,
-				fmt.Sprintf("Deleted marketing email (reason: %s)", classification.Reason),
-			)
-			log.Printf("Deleting marketing email from %s: %s (%s)",
-				email.From, email.Subject, classification.Reason)
+	for _, folder := range folders {
+		// Skip excluded folders
+		if excludedFolders[folder] {
+			continue
 		}
+
+		emails, err := p.client.FetchEmailsFromSenders(folder, senderAddresses)
+		if err != nil {
+			log.Printf("Error fetching from folder %s: %v", folder, err)
+			continue
+		}
+
+		if len(emails) == 0 {
+			continue
+		}
+
+		var uidsToDelete []uint32
+		var keptCount int
+
+		for _, email := range emails {
+			classification := classifier.Classify(email.Subject)
+
+			if classification.IsTransactional {
+				// Keep this email - it's transactional
+				keptCount++
+				log.Printf("Keeping transactional email from %s in %s: %s (%s)",
+					email.From, folder, email.Subject, classification.Reason)
+			} else {
+				// Delete this email - it's marketing
+				uidsToDelete = append(uidsToDelete, email.UID)
+				p.db.LogAction(
+					db.ActionDeletedMarketing,
+					email.From,
+					email.Subject,
+					email.MessageID,
+					fmt.Sprintf("Deleted marketing email from folder %s (reason: %s)", folder, classification.Reason),
+				)
+				log.Printf("Deleting marketing email from %s in %s: %s (%s)",
+					email.From, folder, email.Subject, classification.Reason)
+			}
+		}
+
+		if len(uidsToDelete) > 0 {
+			if err := p.client.DeleteEmails(folder, uidsToDelete); err != nil {
+				log.Printf("Error deleting from folder %s: %v", folder, err)
+				continue
+			}
+		}
+
+		totalDeleted += len(uidsToDelete)
+		totalKept += keptCount
 	}
 
-	if len(uidsToDelete) > 0 {
-		if err := p.client.DeleteEmails(uidsToDelete); err != nil {
-			return fmt.Errorf("failed to delete marketing emails: %w", err)
-		}
-		log.Printf("Deleted %d marketing emails, kept %d transactional emails",
-			len(uidsToDelete), keptCount)
+	if totalDeleted > 0 || totalKept > 0 {
+		log.Printf("Deleted %d marketing emails, kept %d transactional emails across all folders",
+			totalDeleted, totalKept)
 	}
 
 	return nil

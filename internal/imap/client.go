@@ -83,6 +83,32 @@ func (c *Client) connect() (*imapclient.Client, error) {
 	return client, nil
 }
 
+// ListFolders returns all folders in the mailbox
+func (c *Client) ListFolders() ([]string, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	listCmd := client.List("", "*", nil)
+	var folders []string
+
+	for {
+		mbox := listCmd.Next()
+		if mbox == nil {
+			break
+		}
+		folders = append(folders, mbox.Mailbox)
+	}
+
+	if err := listCmd.Close(); err != nil {
+		return nil, fmt.Errorf("failed to list folders: %w", err)
+	}
+
+	return folders, nil
+}
+
 // CreateUSPISFolders ensures the USPIS folder structure exists
 func (c *Client) CreateUSPISFolders() error {
 	client, err := c.connect()
@@ -246,8 +272,8 @@ func (c *Client) CreateBlockFolderIfNotExists() error {
 	return c.CreateUSPISFolders()
 }
 
-// FetchEmailsFromSenders returns emails from specific sender addresses in INBOX
-func (c *Client) FetchEmailsFromSenders(senders []string) ([]Email, error) {
+// FetchEmailsFromSenders returns emails from specific sender addresses in a folder
+func (c *Client) FetchEmailsFromSenders(folder string, senders []string) ([]Email, error) {
 	if len(senders) == 0 {
 		return nil, nil
 	}
@@ -258,9 +284,9 @@ func (c *Client) FetchEmailsFromSenders(senders []string) ([]Email, error) {
 	}
 	defer client.Close()
 
-	_, err = client.Select("INBOX", nil).Wait()
+	_, err = client.Select(folder, nil).Wait()
 	if err != nil {
-		return nil, fmt.Errorf("failed to select INBOX: %w", err)
+		return nil, fmt.Errorf("failed to select folder %s: %w", folder, err)
 	}
 
 	var allEmails []Email
@@ -325,9 +351,9 @@ func (c *Client) FetchEmailsFromSenders(senders []string) ([]Email, error) {
 	return allEmails, nil
 }
 
-// DeleteEmails deletes emails by UID from INBOX
-func (c *Client) DeleteEmails(uids []uint32) error {
-	return c.deleteEmailsFromFolder("INBOX", uids)
+// DeleteEmails deletes emails by UID from a folder
+func (c *Client) DeleteEmails(folder string, uids []uint32) error {
+	return c.deleteEmailsFromFolder(folder, uids)
 }
 
 func flagsToStrings(flags []imap.Flag) []string {
