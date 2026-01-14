@@ -1,0 +1,22 @@
+# Binaries
+server
+postal-inspection-service
+
+# Database
+*.db
+
+# Environment files
+.env
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+
+# Git
+.git/
+
+# Test files
+test.db

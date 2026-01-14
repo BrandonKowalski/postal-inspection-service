@@ -1,18 +1,63 @@
 services:
   postal-inspection-service:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: postal-inspection-service:latest
     container_name: postal-inspection-service
     restart: unless-stopped
+
+    # Proper signal handling
+    init: true
+    stop_grace_period: 30s
+
     ports:
-      - "8080:8080"
+      - "1954:8080"
+
     environment:
       - ICLOUD_EMAIL=${ICLOUD_EMAIL}
       - ICLOUD_APP_PASSWORD=${ICLOUD_APP_PASSWORD}
-      - POLL_INTERVAL=1m
+      - POLL_INTERVAL=${POLL_INTERVAL:-1m}
       - WEB_PORT=8080
       - DB_PATH=/data/postal.db
+      - TZ=${TZ:-UTC}
+
     volumes:
       - postal-data:/data
 
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '1.0'
+        reservations:
+          memory: 64M
+          cpus: '0.25'
+
+    # Logging configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,mode=1777
+
 volumes:
   postal-data:
+    name: postal-inspection-data

@@ -80,6 +80,7 @@ func NewServer(database *db.DB, port int) (*Server, error) {
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/blocked", s.handleBlocked)
 	mux.HandleFunc("/blocked/add", s.handleAddBlocked)
@@ -93,6 +94,12 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
 	log.Printf("Starting web server on %s", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
