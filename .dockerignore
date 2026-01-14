@@ -1,6 +1,6 @@
-# Binaries
-server
-postal-inspection-service
+# Binaries (at root only)
+/server
+/postal-inspection-service
 
 # Database
 *.db
