@@ -12,9 +12,6 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Debug: show what was copied
-RUN ls -la && ls -la cmd/ || echo "cmd/ not found"
-
 # Build the binary with optimizations
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /postal-inspection-service ./cmd/server
 
