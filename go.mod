@@ -1,6 +1,6 @@
 module postal-inspection-service
 
-go 1.25
+go 1.23
 
 require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.7
