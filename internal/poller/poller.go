@@ -243,6 +243,7 @@ func (p *Poller) deleteBlockedSenderEmails() error {
 	}
 
 	if len(blockedSenders) == 0 {
+		log.Println("No blocked senders in database")
 		return nil
 	}
 
@@ -250,6 +251,7 @@ func (p *Poller) deleteBlockedSenderEmails() error {
 	for i, s := range blockedSenders {
 		senderAddresses[i] = s.Email
 	}
+	log.Printf("Checking %d blocked senders", len(senderAddresses))
 
 	// Get all folders and filter excluded ones
 	allFolders, err := p.client.ListFolders()
@@ -263,6 +265,7 @@ func (p *Poller) deleteBlockedSenderEmails() error {
 			folders = append(folders, folder)
 		}
 	}
+	log.Printf("Scanning %d folders (excluded %d)", len(folders), len(allFolders)-len(folders))
 
 	// Scan all folders with a single connection
 	results, err := p.client.ScanFoldersForSenders(folders, senderAddresses)
@@ -271,6 +274,7 @@ func (p *Poller) deleteBlockedSenderEmails() error {
 	}
 
 	if len(results) == 0 {
+		log.Println("No emails found from blocked senders")
 		return nil
 	}
 
@@ -314,6 +318,7 @@ func (p *Poller) filterMarketingEmails() error {
 	}
 
 	if len(transactionalOnlySenders) == 0 {
+		log.Println("No transactional-only senders in database")
 		return nil
 	}
 
@@ -321,6 +326,7 @@ func (p *Poller) filterMarketingEmails() error {
 	for i, s := range transactionalOnlySenders {
 		senderAddresses[i] = s.Email
 	}
+	log.Printf("Checking %d transactional-only senders", len(senderAddresses))
 
 	// Get all folders and filter excluded ones
 	allFolders, err := p.client.ListFolders()
