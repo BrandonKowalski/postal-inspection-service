@@ -374,17 +374,14 @@ func (c *Client) ScanFoldersForSenders(folders []string, senders []string) ([]Fo
 	}
 	defer client.Close()
 
-	// Debug: log first few senders being searched
-	if len(senders) > 0 {
-		preview := senders
-		if len(preview) > 3 {
-			preview = preview[:3]
-		}
-		log.Printf("Searching for senders (first %d): %v", len(preview), preview)
+	// Build a set of senders for fast lookup (lowercase)
+	senderSet := make(map[string]bool)
+	for _, s := range senders {
+		senderSet[strings.ToLower(s)] = true
 	}
 
 	var results []FolderEmails
-	var foldersScanned int
+	var foldersScanned, totalEmails int
 
 	for _, folder := range folders {
 		mbox, err := client.Select(folder, nil).Wait()
@@ -399,63 +396,55 @@ func (c *Client) ScanFoldersForSenders(folders []string, senders []string) ([]Fo
 			continue
 		}
 
+		// Fetch all emails in folder (just envelope - lightweight)
+		var seqSet imap.SeqSet
+		seqSet.AddRange(1, mbox.NumMessages)
+
+		fetchOptions := &imap.FetchOptions{
+			UID:      true,
+			Flags:    true,
+			Envelope: true,
+		}
+
+		fetchCmd := client.Fetch(seqSet, fetchOptions)
+
 		var folderEmails []Email
+		for {
+			msg := fetchCmd.Next()
+			if msg == nil {
+				break
+			}
 
-		for _, sender := range senders {
-			searchCmd := client.Search(&imap.SearchCriteria{
-				Header: []imap.SearchCriteriaHeaderField{
-					{Key: "From", Value: sender},
-				},
-			}, nil)
-
-			searchData, err := searchCmd.Wait()
+			msgData, err := msg.Collect()
 			if err != nil {
-				log.Printf("Search for sender %s in %s failed: %v", sender, folder, err)
 				continue
 			}
 
-			if len(searchData.AllUIDs()) == 0 {
-				continue
+			// Extract sender email
+			var fromEmail string
+			if msgData.Envelope != nil && len(msgData.Envelope.From) > 0 {
+				from := msgData.Envelope.From[0]
+				fromEmail = strings.ToLower(fmt.Sprintf("%s@%s", from.Mailbox, from.Host))
 			}
 
-			fetchOptions := &imap.FetchOptions{
-				UID:      true,
-				Flags:    true,
-				Envelope: true,
-			}
-
-			uidSet := imap.UIDSetNum(searchData.AllUIDs()...)
-			fetchCmd := client.Fetch(uidSet, fetchOptions)
-
-			for {
-				msg := fetchCmd.Next()
-				if msg == nil {
-					break
-				}
-
-				msgData, err := msg.Collect()
-				if err != nil {
-					continue
-				}
-
+			// Check if sender is in our list
+			if fromEmail != "" && senderSet[fromEmail] {
 				email := Email{
 					UID:   uint32(msgData.UID),
 					Flags: flagsToStrings(msgData.Flags),
+					From:  fromEmail,
 				}
-
 				if msgData.Envelope != nil {
 					email.MessageID = msgData.Envelope.MessageID
 					email.Subject = msgData.Envelope.Subject
-					if len(msgData.Envelope.From) > 0 {
-						from := msgData.Envelope.From[0]
-						email.From = fmt.Sprintf("%s@%s", from.Mailbox, from.Host)
-					}
 				}
-
 				folderEmails = append(folderEmails, email)
 			}
+			totalEmails++
+		}
 
-			fetchCmd.Close()
+		if err := fetchCmd.Close(); err != nil {
+			log.Printf("Error fetching from %s: %v", folder, err)
 		}
 
 		if len(folderEmails) > 0 {
@@ -466,7 +455,7 @@ func (c *Client) ScanFoldersForSenders(folders []string, senders []string) ([]Fo
 		}
 	}
 
-	log.Printf("Scan complete: %d folders scanned, %d had matching emails", foldersScanned, len(results))
+	log.Printf("Scan complete: checked %d emails across %d folders, %d folders had matches", totalEmails, foldersScanned, len(results))
 	return results, nil
 }
 
