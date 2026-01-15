@@ -299,6 +299,33 @@ func (db *DB) GetActionLogCount() (int, error) {
 	return count, err
 }
 
+// PurgeOldEmailDetails deletes email details older than the specified number of days
+// and removes references from action_log entries
+func (db *DB) PurgeOldEmailDetails(olderThanDays int) (int64, error) {
+	cutoff := time.Now().AddDate(0, 0, -olderThanDays)
+
+	// First, clear references in action_log
+	_, err := db.conn.Exec(
+		`UPDATE action_log SET email_detail_id = NULL
+		 WHERE email_detail_id IN (SELECT id FROM email_details WHERE created_at < ?)`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to clear email references: %w", err)
+	}
+
+	// Then delete old email details
+	result, err := db.conn.Exec(
+		"DELETE FROM email_details WHERE created_at < ?",
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old email details: %w", err)
+	}
+
+	return result.RowsAffected()
+}
+
 // Stats
 
 type Stats struct {

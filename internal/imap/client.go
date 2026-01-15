@@ -510,6 +510,110 @@ func (c *Client) DeleteEmailsFromFolders(folderUIDs map[string][]uint32) error {
 	return nil
 }
 
+// FetchFullEmailsByUIDs fetches full email content for specific UIDs in a folder
+func (c *Client) FetchFullEmailsByUIDs(folder string, uids []uint32) ([]FetchedEmail, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	_, err = client.Select(folder, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("failed to select folder %s: %w", folder, err)
+	}
+
+	imapUIDs := make([]imap.UID, len(uids))
+	for i, uid := range uids {
+		imapUIDs[i] = imap.UID(uid)
+	}
+
+	uidSet := imap.UIDSetNum(imapUIDs...)
+
+	fetchOptions := &imap.FetchOptions{
+		UID:         true,
+		Envelope:    true,
+		BodySection: []*imap.FetchItemBodySection{{}},
+	}
+
+	fetchCmd := client.Fetch(uidSet, fetchOptions)
+
+	var emails []FetchedEmail
+	for {
+		msg := fetchCmd.Next()
+		if msg == nil {
+			break
+		}
+
+		msgData, err := msg.Collect()
+		if err != nil {
+			log.Printf("Error collecting message: %v", err)
+			continue
+		}
+
+		email := FetchedEmail{
+			UID: uint32(msgData.UID),
+		}
+
+		if msgData.Envelope != nil {
+			email.MessageID = msgData.Envelope.MessageID
+			email.Subject = msgData.Envelope.Subject
+			if !msgData.Envelope.Date.IsZero() {
+				email.Date = msgData.Envelope.Date.Format("2006-01-02 15:04:05")
+			}
+			if len(msgData.Envelope.From) > 0 {
+				from := msgData.Envelope.From[0]
+				email.From = fmt.Sprintf("%s@%s", from.Mailbox, from.Host)
+			}
+			if len(msgData.Envelope.To) > 0 {
+				var tos []string
+				for _, to := range msgData.Envelope.To {
+					tos = append(tos, fmt.Sprintf("%s@%s", to.Mailbox, to.Host))
+				}
+				email.To = strings.Join(tos, ", ")
+			}
+		}
+
+		// Parse body content
+		for _, section := range msgData.BodySection {
+			if len(section.Bytes) == 0 {
+				continue
+			}
+			parsed, parseErr := mail.ReadMessage(bytes.NewReader(section.Bytes))
+			if parseErr != nil {
+				log.Printf("Error parsing message: %v", parseErr)
+				continue
+			}
+
+			var headerLines []string
+			for key, values := range parsed.Header {
+				for _, value := range values {
+					headerLines = append(headerLines, fmt.Sprintf("%s: %s", key, value))
+				}
+			}
+			email.Headers = strings.Join(headerLines, "\n")
+
+			bodyText, bodyHTML, hasAttachments := parseEmailBody(parsed)
+			email.BodyText = bodyText
+			email.BodyHTML = bodyHTML
+			email.HasAttachments = hasAttachments
+			break
+		}
+
+		emails = append(emails, email)
+	}
+
+	if err := fetchCmd.Close(); err != nil {
+		return nil, fmt.Errorf("fetch failed: %w", err)
+	}
+
+	return emails, nil
+}
+
 func flagsToStrings(flags []imap.Flag) []string {
 	result := make([]string, len(flags))
 	for i, f := range flags {

@@ -45,6 +45,9 @@ func (p *Poller) Start(ctx context.Context) {
 		log.Printf("Warning: Could not create USPIS folders: %v", err)
 	}
 
+	// Start daily cleanup routine
+	go p.startDailyCleanup(ctx)
+
 	// Run immediately on start
 	p.poll()
 
@@ -278,24 +281,51 @@ func (p *Poller) deleteBlockedSenderEmails() error {
 		return nil
 	}
 
-	// Collect deletions and log actions
+	// Collect UIDs per folder, fetch full content, save, then delete
 	toDelete := make(map[string][]uint32)
 	var totalDeleted int
 
 	for _, result := range results {
 		log.Printf("Found %d emails from blocked senders in %s", len(result.Emails), result.Folder)
 
+		// Collect UIDs for this folder
 		var uids []uint32
 		for _, email := range result.Emails {
 			uids = append(uids, email.UID)
-			p.db.LogAction(
-				db.ActionDeletedEmail,
-				email.From,
-				email.Subject,
-				email.MessageID,
-				fmt.Sprintf("Auto-deleted email from blocked sender (folder: %s)", result.Folder),
-			)
 		}
+
+		// Fetch full content for these emails
+		fullEmails, err := p.client.FetchFullEmailsByUIDs(result.Folder, uids)
+		if err != nil {
+			log.Printf("Error fetching full emails from %s: %v", result.Folder, err)
+			// Fall back to logging without email content
+			for _, email := range result.Emails {
+				p.db.LogAction(
+					db.ActionDeletedEmail,
+					email.From,
+					email.Subject,
+					email.MessageID,
+					fmt.Sprintf("Auto-deleted email from blocked sender (folder: %s)", result.Folder),
+				)
+			}
+		} else {
+			// Save full content and log with reference
+			for _, fullEmail := range fullEmails {
+				emailDetailID, saveErr := p.saveEmailDetail(&fullEmail)
+				if saveErr != nil {
+					log.Printf("Error saving email detail: %v", saveErr)
+				}
+				p.logActionWithEmailDetail(
+					db.ActionDeletedEmail,
+					fullEmail.From,
+					fullEmail.Subject,
+					fullEmail.MessageID,
+					fmt.Sprintf("Auto-deleted email from blocked sender (folder: %s)", result.Folder),
+					emailDetailID,
+				)
+			}
+		}
+
 		toDelete[result.Folder] = uids
 		totalDeleted += len(uids)
 	}
@@ -351,40 +381,71 @@ func (p *Poller) filterMarketingEmails() error {
 		return nil
 	}
 
-	// Process results and collect deletions
+	// Process results: classify, fetch full content for deletions, save, delete
 	toDelete := make(map[string][]uint32)
 	var totalDeleted, totalKept int
 
 	for _, result := range results {
+		// First pass: classify and collect UIDs to delete
 		var uidsToDelete []uint32
-		var keptCount int
+		classificationReasons := make(map[uint32]string) // UID -> reason
 
 		for _, email := range result.Emails {
 			classification := classifier.Classify(email.Subject)
 
 			if classification.IsTransactional {
-				keptCount++
+				totalKept++
 				log.Printf("Keeping transactional email from %s in %s: %s (%s)",
 					email.From, result.Folder, email.Subject, classification.Reason)
 			} else {
 				uidsToDelete = append(uidsToDelete, email.UID)
-				p.db.LogAction(
-					db.ActionDeletedMarketing,
-					email.From,
-					email.Subject,
-					email.MessageID,
-					fmt.Sprintf("Deleted marketing email from folder %s (reason: %s)", result.Folder, classification.Reason),
-				)
+				classificationReasons[email.UID] = classification.Reason
 				log.Printf("Deleting marketing email from %s in %s: %s (%s)",
 					email.From, result.Folder, email.Subject, classification.Reason)
 			}
 		}
 
-		if len(uidsToDelete) > 0 {
-			toDelete[result.Folder] = uidsToDelete
+		if len(uidsToDelete) == 0 {
+			continue
 		}
+
+		// Fetch full content for emails being deleted
+		fullEmails, err := p.client.FetchFullEmailsByUIDs(result.Folder, uidsToDelete)
+		if err != nil {
+			log.Printf("Error fetching full emails from %s: %v", result.Folder, err)
+			// Fall back to logging without email content
+			for _, email := range result.Emails {
+				if reason, ok := classificationReasons[email.UID]; ok {
+					p.db.LogAction(
+						db.ActionDeletedMarketing,
+						email.From,
+						email.Subject,
+						email.MessageID,
+						fmt.Sprintf("Deleted marketing email from folder %s (reason: %s)", result.Folder, reason),
+					)
+				}
+			}
+		} else {
+			// Save full content and log with reference
+			for _, fullEmail := range fullEmails {
+				reason := classificationReasons[fullEmail.UID]
+				emailDetailID, saveErr := p.saveEmailDetail(&fullEmail)
+				if saveErr != nil {
+					log.Printf("Error saving email detail: %v", saveErr)
+				}
+				p.logActionWithEmailDetail(
+					db.ActionDeletedMarketing,
+					fullEmail.From,
+					fullEmail.Subject,
+					fullEmail.MessageID,
+					fmt.Sprintf("Deleted marketing email from folder %s (reason: %s)", result.Folder, reason),
+					emailDetailID,
+				)
+			}
+		}
+
+		toDelete[result.Folder] = uidsToDelete
 		totalDeleted += len(uidsToDelete)
-		totalKept += keptCount
 	}
 
 	// Delete all with a single connection
@@ -428,5 +489,50 @@ func (p *Poller) logActionWithEmailDetail(action, sender, subject, messageID, de
 		}
 	} else {
 		p.db.LogAction(action, sender, subject, messageID, details)
+	}
+}
+
+// startDailyCleanup runs a daily task to purge old email details
+func (p *Poller) startDailyCleanup(ctx context.Context) {
+	const retentionDays = 30
+
+	// Run cleanup once on startup
+	p.runCleanup(retentionDays)
+
+	// Calculate time until next midnight
+	now := time.Now()
+	nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	timeUntilMidnight := nextMidnight.Sub(now)
+
+	// Wait until midnight, then run daily
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(timeUntilMidnight):
+	}
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	p.runCleanup(retentionDays)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.runCleanup(retentionDays)
+		}
+	}
+}
+
+func (p *Poller) runCleanup(retentionDays int) {
+	deleted, err := p.db.PurgeOldEmailDetails(retentionDays)
+	if err != nil {
+		log.Printf("Error purging old email details: %v", err)
+		return
+	}
+	if deleted > 0 {
+		log.Printf("Purged %d email details older than %d days", deleted, retentionDays)
 	}
 }
