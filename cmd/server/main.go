@@ -47,7 +47,7 @@ func main() {
 	emailPoller := poller.New(imapClient, database, cfg.PollInterval)
 
 	// Create web server
-	repoURL := "https://github.com/bketelsen/postal-inspection-service"
+	repoURL := "https://github.com/BrandonKowalski/postal-inspection-service"
 	webServer, err := web.NewServer(database, cfg.WebPort, CommitSHA, repoURL)
 	if err != nil {
 		log.Fatalf("Failed to create web server: %v", err)
