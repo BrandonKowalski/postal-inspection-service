@@ -30,6 +30,7 @@
         .badge-attachment { background: #fed7d7; color: #c53030; }
         .badge-no-attachment { background: #c6f6d5; color: #276749; }
         .email-body { background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; padding: 15px; max-height: 400px; overflow: auto; white-space: pre-wrap; font-family: monospace; font-size: 13px; }
+        .email-iframe { width: 100%; height: 500px; border: 1px solid #ddd; border-radius: 4px; background: white; }
         .email-headers { background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px; padding: 15px; max-height: 300px; overflow: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
         .tabs { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; }
         .tab { padding: 10px 16px; border: 1px solid #ddd; border-bottom: none; border-radius: 4px 4px 0 0; background: #f8f9fa; cursor: pointer; }
@@ -144,16 +145,22 @@
             {{if or .EmailDetail.BodyText .EmailDetail.BodyHTML}}
             <div class="section-title">Body</div>
             <div class="tabs">
-                {{if .EmailDetail.BodyText}}<div class="tab active" onclick="showTab('text')">Plain Text</div>{{end}}
-                {{if .EmailDetail.BodyHTML}}<div class="tab{{if not .EmailDetail.BodyText}} active{{end}}" onclick="showTab('html')">HTML</div>{{end}}
+                {{if .EmailDetail.BodyHTML}}<div class="tab active" onclick="showTab('rendered')">Rendered</div>{{end}}
+                {{if .EmailDetail.BodyText}}<div class="tab{{if not .EmailDetail.BodyHTML}} active{{end}}" onclick="showTab('text')">Plain Text</div>{{end}}
+                {{if .EmailDetail.BodyHTML}}<div class="tab" onclick="showTab('html')">HTML Source</div>{{end}}
             </div>
+            {{if .EmailDetail.BodyHTML}}
+            <div id="tab-rendered" class="tab-content active">
+                <iframe class="email-iframe" srcdoc="{{.EmailDetail.BodyHTML}}" sandbox="allow-same-origin"></iframe>
+            </div>
+            {{end}}
             {{if .EmailDetail.BodyText}}
-            <div id="tab-text" class="tab-content active">
+            <div id="tab-text" class="tab-content{{if not .EmailDetail.BodyHTML}} active{{end}}">
                 <div class="email-body">{{.EmailDetail.BodyText}}</div>
             </div>
             {{end}}
             {{if .EmailDetail.BodyHTML}}
-            <div id="tab-html" class="tab-content{{if not .EmailDetail.BodyText}} active{{end}}">
+            <div id="tab-html" class="tab-content">
                 <div class="email-body">{{.EmailDetail.BodyHTML}}</div>
             </div>
             {{end}}
