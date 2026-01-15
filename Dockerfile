@@ -1,6 +1,9 @@
 # Build stage
 FROM golang:1.23-alpine AS builder
 
+ARG COMMIT_SHA=unknown
+ARG VERSION=dev
+
 RUN apk add --no-cache gcc musl-dev
 
 WORKDIR /app
@@ -12,8 +15,10 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Build the binary with optimizations
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /postal-inspection-service ./cmd/server
+# Build the binary with optimizations and version info
+RUN CGO_ENABLED=1 GOOS=linux go build \
+    -ldflags="-s -w -X main.CommitSHA=${COMMIT_SHA} -X main.Version=${VERSION}" \
+    -o /postal-inspection-service ./cmd/server
 
 # Runtime stage
 FROM alpine:3.21

@@ -17,12 +17,14 @@ import (
 var templateFS embed.FS
 
 type Server struct {
-	db   *db.DB
-	port int
-	tmpl *template.Template
+	db        *db.DB
+	port      int
+	tmpl      *template.Template
+	commitSHA string
+	repoURL   string
 }
 
-func NewServer(database *db.DB, port int) (*Server, error) {
+func NewServer(database *db.DB, port int, commitSHA, repoURL string) (*Server, error) {
 	funcMap := template.FuncMap{
 		"formatTime": func(t time.Time) string {
 			return t.Format("2006-01-02 15:04:05")
@@ -71,9 +73,11 @@ func NewServer(database *db.DB, port int) (*Server, error) {
 	}
 
 	return &Server{
-		db:   database,
-		port: port,
-		tmpl: tmpl,
+		db:        database,
+		port:      port,
+		tmpl:      tmpl,
+		commitSHA: commitSHA,
+		repoURL:   repoURL,
 	}, nil
 }
 
@@ -96,6 +100,14 @@ func (s *Server) Start() error {
 	return http.ListenAndServe(addr, mux)
 }
 
+func (s *Server) templateData(title string) map[string]any {
+	return map[string]any{
+		"Title":     title,
+		"CommitSHA": s.commitSHA,
+		"RepoURL":   s.repoURL,
+	}
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -115,10 +127,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := map[string]any{
-		"Title": "Dashboard",
-		"Stats": stats,
-	}
+	data := s.templateData("Dashboard")
+	data["Stats"] = stats
 
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
 		log.Printf("Error rendering template: %v", err)
@@ -133,10 +143,8 @@ func (s *Server) handleBlocked(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := map[string]any{
-		"Title":   "Blocked Senders",
-		"Senders": senders,
-	}
+	data := s.templateData("Blocked Senders")
+	data["Senders"] = senders
 
 	if err := s.tmpl.ExecuteTemplate(w, "blocked.html", data); err != nil {
 		log.Printf("Error rendering template: %v", err)
@@ -228,10 +236,8 @@ func (s *Server) handleTransactional(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := map[string]any{
-		"Title":   "Transactional Only Senders",
-		"Senders": senders,
-	}
+	data := s.templateData("Transactional Only Senders")
+	data["Senders"] = senders
 
 	if err := s.tmpl.ExecuteTemplate(w, "transactional.html", data); err != nil {
 		log.Printf("Error rendering template: %v", err)
@@ -344,16 +350,14 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 		totalPages = 1
 	}
 
-	data := map[string]any{
-		"Title":       "Action Log",
-		"Logs":        logs,
-		"CurrentPage": page,
-		"TotalPages":  totalPages,
-		"HasPrev":     page > 1,
-		"HasNext":     page < totalPages,
-		"PrevPage":    page - 1,
-		"NextPage":    page + 1,
-	}
+	data := s.templateData("Action Log")
+	data["Logs"] = logs
+	data["CurrentPage"] = page
+	data["TotalPages"] = totalPages
+	data["HasPrev"] = page > 1
+	data["HasNext"] = page < totalPages
+	data["PrevPage"] = page - 1
+	data["NextPage"] = page + 1
 
 	if err := s.tmpl.ExecuteTemplate(w, "log.html", data); err != nil {
 		log.Printf("Error rendering template: %v", err)
@@ -387,11 +391,9 @@ func (s *Server) handleLogDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data := map[string]any{
-		"Title":       "Action Detail",
-		"Log":         actionLog,
-		"EmailDetail": emailDetail,
-	}
+	data := s.templateData("Action Detail")
+	data["Log"] = actionLog
+	data["EmailDetail"] = emailDetail
 
 	if err := s.tmpl.ExecuteTemplate(w, "log_detail.html", data); err != nil {
 		log.Printf("Error rendering template: %v", err)

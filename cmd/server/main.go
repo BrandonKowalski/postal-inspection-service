@@ -14,6 +14,12 @@ import (
 	"postal-inspection-service/internal/web"
 )
 
+// Set at build time via -ldflags
+var (
+	Version   = "dev"
+	CommitSHA = "unknown"
+)
+
 func main() {
 	log.Println("Starting Postal Inspection Service...")
 
@@ -41,7 +47,8 @@ func main() {
 	emailPoller := poller.New(imapClient, database, cfg.PollInterval)
 
 	// Create web server
-	webServer, err := web.NewServer(database, cfg.WebPort)
+	repoURL := "https://github.com/bketelsen/postal-inspection-service"
+	webServer, err := web.NewServer(database, cfg.WebPort, CommitSHA, repoURL)
 	if err != nil {
 		log.Fatalf("Failed to create web server: %v", err)
 	}

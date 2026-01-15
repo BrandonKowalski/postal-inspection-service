@@ -1,9 +1,6 @@
 services:
   postal-inspection-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: postal-inspection-service:latest
+    image: ghcr.io/bketelsen/postal-inspection-service:main
     container_name: postal-inspection-service
     restart: unless-stopped
 
