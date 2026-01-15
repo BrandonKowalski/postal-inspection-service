@@ -1,6 +1,6 @@
 services:
   postal-inspection-service:
-    image: ghcr.io/bketelsen/postal-inspection-service:main
+    image: ghcr.io/brandonkowalski/postal-inspection-service:main
     container_name: postal-inspection-service
     restart: unless-stopped
 
