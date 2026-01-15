@@ -356,6 +356,154 @@ func (c *Client) DeleteEmails(folder string, uids []uint32) error {
 	return c.deleteEmailsFromFolder(folder, uids)
 }
 
+// FolderEmails holds emails found in a specific folder
+type FolderEmails struct {
+	Folder string
+	Emails []Email
+}
+
+// ScanFoldersForSenders searches multiple folders for emails from specific senders using a single connection
+func (c *Client) ScanFoldersForSenders(folders []string, senders []string) ([]FolderEmails, error) {
+	if len(senders) == 0 || len(folders) == 0 {
+		return nil, nil
+	}
+
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	var results []FolderEmails
+
+	for _, folder := range folders {
+		_, err = client.Select(folder, nil).Wait()
+		if err != nil {
+			log.Printf("Failed to select folder %s: %v", folder, err)
+			continue
+		}
+
+		var folderEmails []Email
+
+		for _, sender := range senders {
+			searchCmd := client.Search(&imap.SearchCriteria{
+				Header: []imap.SearchCriteriaHeaderField{
+					{Key: "From", Value: sender},
+				},
+			}, nil)
+
+			searchData, err := searchCmd.Wait()
+			if err != nil {
+				log.Printf("Search for sender %s in %s failed: %v", sender, folder, err)
+				continue
+			}
+
+			if len(searchData.AllUIDs()) == 0 {
+				continue
+			}
+
+			fetchOptions := &imap.FetchOptions{
+				UID:      true,
+				Flags:    true,
+				Envelope: true,
+			}
+
+			uidSet := imap.UIDSetNum(searchData.AllUIDs()...)
+			fetchCmd := client.Fetch(uidSet, fetchOptions)
+
+			for {
+				msg := fetchCmd.Next()
+				if msg == nil {
+					break
+				}
+
+				msgData, err := msg.Collect()
+				if err != nil {
+					continue
+				}
+
+				email := Email{
+					UID:   uint32(msgData.UID),
+					Flags: flagsToStrings(msgData.Flags),
+				}
+
+				if msgData.Envelope != nil {
+					email.MessageID = msgData.Envelope.MessageID
+					email.Subject = msgData.Envelope.Subject
+					if len(msgData.Envelope.From) > 0 {
+						from := msgData.Envelope.From[0]
+						email.From = fmt.Sprintf("%s@%s", from.Mailbox, from.Host)
+					}
+				}
+
+				folderEmails = append(folderEmails, email)
+			}
+
+			fetchCmd.Close()
+		}
+
+		if len(folderEmails) > 0 {
+			results = append(results, FolderEmails{
+				Folder: folder,
+				Emails: folderEmails,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+// DeleteEmailsFromFolders deletes emails from multiple folders using a single connection
+func (c *Client) DeleteEmailsFromFolders(folderUIDs map[string][]uint32) error {
+	if len(folderUIDs) == 0 {
+		return nil
+	}
+
+	client, err := c.connect()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	for folder, uids := range folderUIDs {
+		if len(uids) == 0 {
+			continue
+		}
+
+		_, err = client.Select(folder, nil).Wait()
+		if err != nil {
+			log.Printf("Failed to select folder %s for deletion: %v", folder, err)
+			continue
+		}
+
+		imapUIDs := make([]imap.UID, len(uids))
+		for i, uid := range uids {
+			imapUIDs[i] = imap.UID(uid)
+		}
+
+		uidSet := imap.UIDSetNum(imapUIDs...)
+
+		storeCmd := client.Store(uidSet, &imap.StoreFlags{
+			Op:    imap.StoreFlagsAdd,
+			Flags: []imap.Flag{imap.FlagDeleted},
+		}, nil)
+
+		if err := storeCmd.Close(); err != nil {
+			log.Printf("Failed to mark as deleted in %s: %v", folder, err)
+			continue
+		}
+
+		if err := client.Expunge().Close(); err != nil {
+			log.Printf("Failed to expunge in %s: %v", folder, err)
+			continue
+		}
+
+		log.Printf("Deleted %d emails from %s", len(uids), folder)
+	}
+
+	return nil
+}
+
 func flagsToStrings(flags []imap.Flag) []string {
 	result := make([]string, len(flags))
 	for i, f := range flags {

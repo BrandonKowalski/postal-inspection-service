@@ -251,50 +251,54 @@ func (p *Poller) deleteBlockedSenderEmails() error {
 		senderAddresses[i] = s.Email
 	}
 
-	// Get all folders
-	folders, err := p.client.ListFolders()
+	// Get all folders and filter excluded ones
+	allFolders, err := p.client.ListFolders()
 	if err != nil {
 		return fmt.Errorf("failed to list folders: %w", err)
 	}
 
+	var folders []string
+	for _, folder := range allFolders {
+		if !excludedFolders[folder] {
+			folders = append(folders, folder)
+		}
+	}
+
+	// Scan all folders with a single connection
+	results, err := p.client.ScanFoldersForSenders(folders, senderAddresses)
+	if err != nil {
+		return fmt.Errorf("failed to scan folders: %w", err)
+	}
+
+	if len(results) == 0 {
+		return nil
+	}
+
+	// Collect deletions and log actions
+	toDelete := make(map[string][]uint32)
 	var totalDeleted int
 
-	for _, folder := range folders {
-		// Skip excluded folders
-		if excludedFolders[folder] {
-			continue
-		}
+	for _, result := range results {
+		log.Printf("Found %d emails from blocked senders in %s", len(result.Emails), result.Folder)
 
-		emails, err := p.client.FetchEmailsFromSenders(folder, senderAddresses)
-		if err != nil {
-			log.Printf("Error fetching from folder %s: %v", folder, err)
-			continue
-		}
-
-		if len(emails) == 0 {
-			continue
-		}
-
-		log.Printf("Found %d emails from blocked senders in %s", len(emails), folder)
-
-		var uidsToDelete []uint32
-		for _, email := range emails {
-			uidsToDelete = append(uidsToDelete, email.UID)
+		var uids []uint32
+		for _, email := range result.Emails {
+			uids = append(uids, email.UID)
 			p.db.LogAction(
 				db.ActionDeletedEmail,
 				email.From,
 				email.Subject,
 				email.MessageID,
-				fmt.Sprintf("Auto-deleted email from blocked sender (folder: %s)", folder),
+				fmt.Sprintf("Auto-deleted email from blocked sender (folder: %s)", result.Folder),
 			)
 		}
+		toDelete[result.Folder] = uids
+		totalDeleted += len(uids)
+	}
 
-		if err := p.client.DeleteEmails(folder, uidsToDelete); err != nil {
-			log.Printf("Error deleting from folder %s: %v", folder, err)
-			continue
-		}
-
-		totalDeleted += len(uidsToDelete)
+	// Delete all with a single connection
+	if err := p.client.DeleteEmailsFromFolders(toDelete); err != nil {
+		return fmt.Errorf("failed to delete emails: %w", err)
 	}
 
 	if totalDeleted > 0 {
@@ -318,65 +322,70 @@ func (p *Poller) filterMarketingEmails() error {
 		senderAddresses[i] = s.Email
 	}
 
-	// Get all folders
-	folders, err := p.client.ListFolders()
+	// Get all folders and filter excluded ones
+	allFolders, err := p.client.ListFolders()
 	if err != nil {
 		return fmt.Errorf("failed to list folders: %w", err)
 	}
 
+	var folders []string
+	for _, folder := range allFolders {
+		if !excludedFolders[folder] {
+			folders = append(folders, folder)
+		}
+	}
+
+	// Scan all folders with a single connection
+	results, err := p.client.ScanFoldersForSenders(folders, senderAddresses)
+	if err != nil {
+		return fmt.Errorf("failed to scan folders: %w", err)
+	}
+
+	if len(results) == 0 {
+		return nil
+	}
+
+	// Process results and collect deletions
+	toDelete := make(map[string][]uint32)
 	var totalDeleted, totalKept int
 
-	for _, folder := range folders {
-		// Skip excluded folders
-		if excludedFolders[folder] {
-			continue
-		}
-
-		emails, err := p.client.FetchEmailsFromSenders(folder, senderAddresses)
-		if err != nil {
-			log.Printf("Error fetching from folder %s: %v", folder, err)
-			continue
-		}
-
-		if len(emails) == 0 {
-			continue
-		}
-
+	for _, result := range results {
 		var uidsToDelete []uint32
 		var keptCount int
 
-		for _, email := range emails {
+		for _, email := range result.Emails {
 			classification := classifier.Classify(email.Subject)
 
 			if classification.IsTransactional {
-				// Keep this email - it's transactional
 				keptCount++
 				log.Printf("Keeping transactional email from %s in %s: %s (%s)",
-					email.From, folder, email.Subject, classification.Reason)
+					email.From, result.Folder, email.Subject, classification.Reason)
 			} else {
-				// Delete this email - it's marketing
 				uidsToDelete = append(uidsToDelete, email.UID)
 				p.db.LogAction(
 					db.ActionDeletedMarketing,
 					email.From,
 					email.Subject,
 					email.MessageID,
-					fmt.Sprintf("Deleted marketing email from folder %s (reason: %s)", folder, classification.Reason),
+					fmt.Sprintf("Deleted marketing email from folder %s (reason: %s)", result.Folder, classification.Reason),
 				)
 				log.Printf("Deleting marketing email from %s in %s: %s (%s)",
-					email.From, folder, email.Subject, classification.Reason)
+					email.From, result.Folder, email.Subject, classification.Reason)
 			}
 		}
 
 		if len(uidsToDelete) > 0 {
-			if err := p.client.DeleteEmails(folder, uidsToDelete); err != nil {
-				log.Printf("Error deleting from folder %s: %v", folder, err)
-				continue
-			}
+			toDelete[result.Folder] = uidsToDelete
 		}
-
 		totalDeleted += len(uidsToDelete)
 		totalKept += keptCount
+	}
+
+	// Delete all with a single connection
+	if len(toDelete) > 0 {
+		if err := p.client.DeleteEmailsFromFolders(toDelete); err != nil {
+			return fmt.Errorf("failed to delete marketing emails: %w", err)
+		}
 	}
 
 	if totalDeleted > 0 || totalKept > 0 {
