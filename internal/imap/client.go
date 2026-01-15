@@ -374,12 +374,28 @@ func (c *Client) ScanFoldersForSenders(folders []string, senders []string) ([]Fo
 	}
 	defer client.Close()
 
+	// Debug: log first few senders being searched
+	if len(senders) > 0 {
+		preview := senders
+		if len(preview) > 3 {
+			preview = preview[:3]
+		}
+		log.Printf("Searching for senders (first %d): %v", len(preview), preview)
+	}
+
 	var results []FolderEmails
+	var foldersScanned int
 
 	for _, folder := range folders {
-		_, err = client.Select(folder, nil).Wait()
+		mbox, err := client.Select(folder, nil).Wait()
 		if err != nil {
 			log.Printf("Failed to select folder %s: %v", folder, err)
+			continue
+		}
+		foldersScanned++
+
+		// Skip empty folders
+		if mbox.NumMessages == 0 {
 			continue
 		}
 
@@ -450,6 +466,7 @@ func (c *Client) ScanFoldersForSenders(folders []string, senders []string) ([]Fo
 		}
 	}
 
+	log.Printf("Scan complete: %d folders scanned, %d had matching emails", foldersScanned, len(results))
 	return results, nil
 }
 
