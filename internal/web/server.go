@@ -85,14 +85,13 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/", s.handleLog)
 	mux.HandleFunc("/blocked", s.handleBlocked)
 	mux.HandleFunc("/blocked/add", s.handleAddBlocked)
 	mux.HandleFunc("/blocked/delete", s.handleDeleteBlocked)
 	mux.HandleFunc("/transactional", s.handleTransactional)
 	mux.HandleFunc("/transactional/add", s.handleAddTransactional)
 	mux.HandleFunc("/transactional/delete", s.handleDeleteTransactional)
-	mux.HandleFunc("/log", s.handleLog)
 	mux.HandleFunc("/log/detail", s.handleLogDetail)
 
 	addr := fmt.Sprintf(":%d", s.port)
@@ -112,27 +111,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
-}
-
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-
-	stats, err := s.db.GetStats()
-	if err != nil {
-		http.Error(w, "Failed to load stats", http.StatusInternalServerError)
-		log.Printf("Error loading stats: %v", err)
-		return
-	}
-
-	data := s.templateData("Dashboard")
-	data["Stats"] = stats
-
-	if err := s.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
-		log.Printf("Error rendering template: %v", err)
-	}
 }
 
 func (s *Server) handleBlocked(w http.ResponseWriter, r *http.Request) {
@@ -322,6 +300,11 @@ func (s *Server) handleDeleteTransactional(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
 	page := 1
 	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
 		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
@@ -345,6 +328,13 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	stats, err := s.db.GetStats()
+	if err != nil {
+		http.Error(w, "Failed to load stats", http.StatusInternalServerError)
+		log.Printf("Error loading stats: %v", err)
+		return
+	}
+
 	totalPages := (totalCount + limit - 1) / limit
 	if totalPages == 0 {
 		totalPages = 1
@@ -352,6 +342,7 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 
 	data := s.templateData("Action Log")
 	data["Logs"] = logs
+	data["Stats"] = stats
 	data["CurrentPage"] = page
 	data["TotalPages"] = totalPages
 	data["HasPrev"] = page > 1
